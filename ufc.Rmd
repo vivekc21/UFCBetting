@@ -1,0 +1,404 @@
+---
+title: "<center>UFC Betting</center>"
+author: "<center>Vivek Chinimilli</center>"
+date: "<center>11/19/2020</center>"
+output: 
+  html_document:
+    theme: sandstone
+    highlight: tango
+    toc: yes
+    toc_float: yes
+    code_folding: "show"
+---
+
+```{r setup, include=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(scipen=999)
+```
+
+```{r libraries, include=FALSE}
+library(dplyr)
+library(C50)
+library(caret)
+library(class)
+library(neuralnet)
+library(kernlab)
+library(scales)
+library(kableExtra)
+```
+
+***
+# Introduction 
+***
+
+We are examining historical UFC fight data in order to determine whether or not we can build a model capable of turning a profit by betting a fixed amount on each fight. We are using a stack model method containing five models: Logistic Regression, KNN, ANN, Decision Tree, Support Vector Machine. If this model turns out to be accurate, next steps include developing a constant improvement pipeline as well as an automated fightnight checker using webscraping. Success will be defined as making money using the standard Las Vegas odds in the data set with a constant $100 bid.
+
+***
+# Data Ingest
+***
+
+## Data Read-In
+
+```{r input}
+fullData <- read.csv("ufc-master.csv")
+set.seed(987654321)
+```
+
+## Fighter Extraction
+
+```{r extraction}
+fighters <- c(fullData$R_fighter, fullData$B_fighter)
+fighters <- fighters %>% unique()
+```
+
+## Cleaning
+
+```{r cleaning}
+# ALL DIFS ARE Red - BLUE
+# Useless columns
+fullData$R_fighter <- NULL
+fullData$B_fighter <- NULL
+fullData$constant_1 <- NULL
+fullData$date <- NULL
+fullData$location <- NULL
+fullData$country <- NULL
+# Factorization of Strings
+fullData$weight_class <- as.factor(fullData$weight_class)
+fullData$gender <- as.factor(fullData$gender)
+fullData$B_Stance <- as.factor(fullData$B_Stance)
+fullData$R_Stance <- as.factor(fullData$R_Stance)
+fullData$empty_arena <- as.factor(fullData$empty_arena)
+fullData$better_rank <- as.factor(fullData$better_rank)
+fullData$title_bout <- as.factor(fullData$title_bout)
+# Rank Details
+fullData$R_Women.s.Bantamweight_rank <- NULL
+fullData$R_Women.s.Featherweight_rank <- NULL
+fullData$R_Women.s.Flyweight_rank <- NULL
+fullData$R_Women.s.Strawweight_rank <- NULL
+fullData$B_Women.s.Bantamweight_rank <- NULL
+fullData$B_Women.s.Featherweight_rank <- NULL
+fullData$B_Women.s.Flyweight_rank <- NULL
+fullData$B_match_weightclass_rank <- NULL
+fullData$R_match_weightclass_rank <- NULL
+fullData$R_heavyweight_rank <- NULL
+fullData$R_Light.Heavyweight_rank <- NULL
+fullData$R_Middleweight_rank <- NULL
+fullData$R_Welterweight_rank <- NULL
+fullData$R_Lightweight_rank <- NULL
+fullData$R_Featherweight_rank <- NULL
+fullData$R_Bantamweight_rank <- NULL
+fullData$R_Flyweight_rank <- NULL
+fullData$R_Pound.for.Pound_rank <- NULL
+fullData$B_Women.s.Strawweight_rank <- NULL
+fullData$B_Heavyweight_rank <- NULL
+fullData$B_Light.Heavyweight_rank <- NULL
+fullData$B_Middleweight_rank <- NULL
+fullData$B_Lightweight_rank <- NULL
+fullData$B_Featherweight_rank <- NULL
+fullData$B_Bantamweight_rank <- NULL
+fullData$B_Flyweight_rank <- NULL
+fullData$B_Pound.for.Pound_rank <- NULL
+fullData$R_Heavyweight_rank <- NULL
+fullData$B_Welterweight_rank <- NULL
+# Bout specific details (Ex Post)
+fullData$finish <- NULL
+fullData$finish_details <- NULL
+fullData$finish_round <- NULL
+fullData$finish_round_time <- NULL
+fullData$total_fight_time_secs <- NULL
+fullData$R_kd_bout<- NULL
+fullData$B_kd_bout<- NULL
+fullData$R_sig_str_landed_bout<- NULL
+fullData$B_sig_str_landed_bout<- NULL
+fullData$R_sig_str_attempted_bout<- NULL
+fullData$B_sig_str_attempted_bout<- NULL
+fullData$R_sig_str_pct_bout<- NULL
+fullData$B_sig_str_pct_bout<- NULL
+fullData$R_tot_str_landed_bout<- NULL
+fullData$B_tot_str_landed_bout<- NULL
+fullData$R_tot_str_attempted_bout<- NULL
+fullData$B_tot_str_attempted_bout<- NULL
+fullData$R_td_landed_bout<- NULL
+fullData$B_td_landed_bout<- NULL
+fullData$R_td_attempted_bout<- NULL
+fullData$B_td_attempted_bout<- NULL
+fullData$R_td_pct_bout<- NULL
+fullData$B_td_pct_bout<- NULL
+fullData$R_sub_attempts_bout<- NULL
+fullData$B_sub_attempts_bout<- NULL
+fullData$R_pass_bout<- NULL
+fullData$B_pass_bout<- NULL
+fullData$R_rev_bout<- NULL
+fullData$B_rev_bout<- NULL
+# To make some exploratory graphics
+xp <- fullData
+xp$Winner <- as.factor(xp$Winner)
+# Better Winner Column
+fullData$RedWins <- as.factor(ifelse(fullData$Winner == "Red", 1, 0))
+fullData$Winner <- NULL
+fullData$ID <- seq.int(nrow(fullData))
+```
+
+Here, we remove three types of variables:
+
+  1. Character and constant features like Country, Fighter Name, Constant_1, and more.
+  2. We remove rank details by class as this is encoded in fighters rank detail and weight class details
+  3. Ex Post variables calculated after the fight. This includes finishing details and statistics of the fight like strikes landed.
+
+In addition to dropping columns, we add a better response column, named RedWins, which is 1 if the red fighter wins and blue otherwise. Finally, we add a UID to all the fights so that we can ID the fights after predicting them.
+
+## Normalizing and Randomizing
+
+```{r normAndRand}
+ufc_mm <- as.data.frame(model.matrix(~.-1, fullData))
+normalize <- function(x) {
+  return ((x - min(x)) / (max(x) - min(x)))
+}
+ID_order <- ufc_mm$ID
+ufc_mm_n <- as.data.frame(lapply(ufc_mm[1:(ncol(ufc_mm) - 1)], normalize))
+ufc_mm_n$B_StanceSwitch. <- NULL
+ufc_mm_n_no_odds <- ufc_mm_n
+ufc_mm_n_no_odds$R_odds <- NULL
+ufc_mm_n_no_odds$B_odds <- NULL
+ufc_mm_n_no_odds$R_ev <- NULL
+ufc_mm_n_no_odds$B_ev <- NULL
+ufc_mm_n_knn <- ufc_mm_n[ , -91]
+ufc_mm_n_knn_no_odds <- ufc_mm_n_no_odds[, -87]
+```
+
+After preparing the data frame, we then normalize all the values using min-max normalization and the create separate columns for all categorical data. This causes some columns to become corrupt and we subsequently remove them. Additionally, we remove odds and expected value from the data set as those are the odds we are trying to beat, and so it wouldn't make sense to include those features in our analysis.
+
+***
+# Model Building
+***
+
+Because we are developing a stack model, we do not split the data in to test and train for the sub-models. Instead, we wait until we have all the predictions and then we split the data. This results in more data on which to train the stack model. However, these does lead to some overfitting concerns. With over 3000 rows, this is less of a concern however we still must be careful (notably, do not set k in k-NN to 1). 
+
+## Logical Model
+
+```{r logit, cache=TRUE, eval=FALSE}
+logit.model <- glm(RedWins1 ~., data=ufc_mm_n_no_odds, family = "binomial")
+step_mod <- step(logit.model_no_odds)
+```
+
+We first build a base logical model and then use a step model to build an eventually significant model with good predictors. This step model will slowly remove columns to try and find the most significant combination of columns to predict fights.
+
+```{r logitLoad, include=FALSE}
+load("step_mod.Rdata")
+```
+
+```{r logitSummary, cache=TRUE}
+summary(step_mod)
+lm_pred <- predict(step_mod, ufc_mm_n_no_odds, type="response")
+lm_pred_bin <- ifelse(lm_pred > 0.5, 1, 0)
+confusionMatrix(as.factor(lm_pred_bin), as.factor(ufc_mm_n_no_odds$RedWins1), positive='1')
+```
+
+Overall, we see fairly good performance with an accuracy of approx. 63% and a kappa of about 20%. This is fairly good, but certainly leaves room for improvement. Interestingly, this model significantly over predicts the response variable (predicts a 1).
+
+## ANN
+
+```{r ANN, cache=TRUE}
+ann_model <- neuralnet(formula = RedWins1 ~ ., data = ufc_mm_n_no_odds, hidden=c(2,1), stepmax=200000, threshold = 0.03)
+# obtain model results
+ann_pred <- compute(ann_model, ufc_mm_n_no_odds)$net.result
+ann_pred_bin <- as.factor(ifelse(ann_pred > 0.5,1,0))
+#Crosstable and confusion matrix to look at results of the individual model
+confusionMatrix(ann_pred_bin, as.factor(ufc_mm_n_no_odds$RedWins1), positive = "1")
+```
+
+The ANN model with no odds had a 71.3% accuracy with a  Kappa value of ~38%, which means the model is about 38% more accurate than random chance would be. We were able to improve the accuracy of the model by a couple percentage points by adding 3 hidden nodes. In betting, a high accuracy is extremely difficult due to the random chance that is involved in sports events, including UFC. We are aiming for an accuracy of roughly 60-70% so being right above that range is very satisfactory by our standards. The high sensitivity (~86%) means that the true negatives (predicting a loss) is very accurate in the ANN model, where the lower specificity (~51%) means that true positives (where the Red fighter wins) is harder to predict in this model. It is not possible to understand what in the data is causing this discrepancy between sensitivity and specificity as we don't know what is affecting it in an ANN model. 
+
+## KNN
+
+```{r KNN, cache=TRUE}
+ufc_mm_n_no_odds$RedWins1 <- as.factor(ufc_mm_n_no_odds$RedWins1)
+sqrt(nrow(ufc_mm_n_no_odds))
+knn_pred <- knn(train = ufc_mm_n_knn_no_odds, test = ufc_mm_n_knn_no_odds,
+                      cl = ufc_mm_n_no_odds$RedWins1, k=37)
+confusionMatrix(as.factor(knn_pred), as.factor(ufc_mm_n_no_odds$RedWins1), positive='1')
+```
+
+The KNN model with no odds had a 62.26% accuracy with a relatively low Kappa value (15.38%), meaning the model is only about 15% more accurate than random chance. We found that the most optimal K value was 37, meaning that 37 was neither over fitting or under fitting the train data. The industry standard for sports betting is achieving around a 60% accuracy, so this KNN model alone falls right in line with the industry standard, and as we do later in the project, combining our models into a stacked model is able to surpass typical industry standards. The high sensitivity (~89%) means that the true negatives in this model (predicting a loss) are highly accurate (especially in the betting world), and the specificity (~25%) means that the true positives (predicting a win) are much less accurate. It is not possible to understand which specific variables are causing this discrepancy between sensitivity and specificity because KNN models are ‘black box’ so we don’t know exactly how the model is being influenced.
+
+## Decision Tree
+
+```{r dTree, cache=TRUE}
+tree <- C5.0(formula = RedWins1 ~ ., data=ufc_mm_n_no_odds, trials = 10)
+summary(tree)
+tree_pred <- predict(tree, ufc_mm_n_no_odds)
+confusionMatrix(as.factor(tree_pred), as.factor(ufc_mm_n_no_odds$RedWins1), positive='1')
+```
+
+With the decision tree, we see usage of a number of different features that achieves an accuracy of ~63% and a kappa of ~19%. Relatively, this is one of the worse models, similar to the KNN model. While it uses a lot of various features, the most important features are title bout, R_avg_TD_landed, win_streak_dif, and age_dif. All rows are evaluated on these four columns. Overall, most of these features make sense as they are looking at either fighter differences in wins, or body characteristics, or their ability to actually fight. Similar to KNN, this model massively over predicts 1 in the response variable. One reason this may be is that both KNN and DT essentially use the old values to predict the new ones while the other three models come up with a sort of formula to predict  the outcome. Unfortunately, this is not easy to verify as many of these models are black boxes so it is hard to compare.
+
+## SVM Model
+
+```{r SVM, cache=TRUE}
+ufc_mm_n_no_odds$RedWins1 = factor(ufc_mm_n_no_odds$RedWins1)
+fight_classifier_no_odds = ksvm(RedWins1 ~., data = ufc_mm_n_no_odds, kernel = "rbfdot")
+svm_pred <- predict(fight_classifier_no_odds, ufc_mm_n_no_odds)
+svmcm <- confusionMatrix(as.factor(svm_pred), as.factor(ufc_mm_n_no_odds$RedWins1), positive = '1')
+svmcm
+```
+
+Our accuracy for the SVM model is `r percent(svmcm$overall["Accuracy"])` percent, which is above 50%. Using the radial basis kernel also gave us the highest overall accuracy. The false negative rate is `r percent(svmcm$table[2,1]/(svmcm$table[1,1] + svmcm$table[1,2] + svmcm$table[2,1] + svmcm$table[2,2]))` percent. The false positive rate is `r percent(svmcm$table[1,2]/(svmcm$table[1,1] + svmcm$table[1,2] + svmcm$table[2,1] + svmcm$table[2,2]))`. Unfortunately, attempting to understand this model is impossible because we would need to be able to under stand n-dimensial mechanics on the order of n > 85, a nearly impossible problem for the common, and even the genius, observer.
+
+***
+# Stack Model
+***
+
+```{r stackPlot, cache=TRUE}
+results <- data.frame(ans=ufc_mm_n$RedWins1, knn_pred, ann_pred, tree_pred, svm_pred, lm_pred, ID_order)
+results$ans <- as.factor(results$ans)
+nums <- sample(1:nrow(results), nrow(results) * 0.7)
+train <- results[nums, ]
+test <- results[-nums, ]
+stack <- C5.0(formula = ans ~ knn_pred + ann_pred + tree_pred + svm_pred + lm_pred, data=train, trials=5)
+plot(stack)
+```
+
+Here we the first trial of the tree uses three different models. All rows will be evaluated by the SVM model, then the ANN model, and then only a few rows will be evaluated on the logistic model.
+
+```{r stackSum, cache=TRUE}
+summary(stack)
+```
+
+Overall, in the five trial decision tree, we see full usage of 3 different models: ANN, SVM and logistic regression. This means that 3 of our models are influential in prediction fight outcomes. 
+
+```{r stackPred, cache=TRUE}
+stack_pred <- predict(stack, test)
+stack_cm <- confusionMatrix(as.factor(stack_pred), as.factor(test$ans), positive='1')
+stack_cm
+```
+
+Overall, we see an accuracy of `r round(stack_cm$overall['Accuracy'] * 100, 2)`%, which is significantly higher than our hope of better than 50%. On top of that, our kappa is `r round(stack_cm$overall['Kappa'] * 100, 2)`%, which means we are that much better than accurate guessing, which is again very promising in our endeavor to beat the Vegas odds.
+
+***
+# Prediction Analysis
+***
+
+## Distributions
+
+Now that we have these predictions, lets take a look at what types of fights were predicted (both properly and improperly).
+
+```{r oddSetup}
+red_bids <- test$ID_order[stack_pred == 1]
+blue_bids <- test$ID_order[stack_pred == 0]
+red_bids_data <- fullData[fullData$ID %in% red_bids, ]
+blue_bids_data <- fullData[fullData$ID %in% blue_bids, ]
+# For the red bids for which we are right, get outcome set to R_ev (zero otherwise, and add odds data)
+temp_red <- red_bids_data %>%
+  mutate(true = ifelse(RedWins == 1, 1, 0)) %>%
+  mutate(outcome = ifelse(true == 1, R_ev, 0), odds = R_odds)
+# For the blue bids for which we are right, get outcome set to B_ev (zero otherwise, and add odds data)
+temp_blue <- blue_bids_data %>%
+  mutate(true = ifelse(RedWins == 0, 1, 0)) %>%
+  mutate(outcome = ifelse(true == 1, B_ev, 0), odds = B_odds)
+full_bets <- rbind(temp_red, temp_blue)
+full_bets$true <- as.factor(full_bets$true)
+levels(full_bets$true) <- c("Incorrect", "Correct")
+test <- rbind(data.frame(as.list(summary(full_bets[full_bets$true == "Correct", ]$odds))), data.frame(as.list(summary(full_bets[full_bets$true == "Incorrect", ]$odds))))
+row.names(test) <- c("Correct", "Incorrect")
+ggplot(data=full_bets, aes(x=odds, colour=true)) + geom_density()
+```
+
+This graph shows us exactly what we would have expected. We are more right than wrong for the odds that are negative (when the favorite wins) and we are worse for those bids where the odds are positive (where the underdog will win). There is a little bit of variation here throughout the graph, however we would expect these to even out over time. An important note here is that there are more fights with negative odds winners than positive, meaning that there are a larger proportion of fights that we get right.
+
+```{r oddTable, echo=FALSE}
+kbl(test) %>%
+  kable_styling()
+```
+
+This table tells a very similar story to the density plot. For the bids where we are correct, there are on average lower odds. On the incorrect side, the average odds are somewhat higher, meaning we more often get the ones wrong where the underdog wins. There is some variation in the data (notably the max odds of the correct bids is higher than that of the incorrect) but this is probably just coincidence and will even out as we evaluate more and more bids. An important note here is that the min odds for the correct bids is much lower than that for incorrect so that when there is an obvious winner, we almost always predict properly.
+
+## Bidding Outcome
+
+```{r bidResults, cache=TRUE}
+# Sum up all outcomes, this is R_ev|RedWins == 1 and B_ev|RedWins == 0
+sum(full_bets$outcome)
+```
+
+This value is incredibly impressive and indicates we would make \$`r round(sum(full_bets$outcome), 2)` betting on all `r nrow(full_bets)` fights with a constant \$100 bid. This is, on average, \$`r round(sum(full_bets$outcome)/nrow(full_bets), 2)` per $100 bid. Now, this number may seem large, however it is actually about expected given that any average return less than \$100 is what you would expect betting on the favorite. So, while we do not consistently beat the Vegas odds, we do a lot more than break even, which is more than good enough.
+
+# Next Steps
+
+## Testing
+
+First and foremost, we need to test our model for a number of months before putting any money behind these predictions. Our biggest worry is that we are over fitting the model to the data we have. Unfortunately, this is the best way to make a stack model and 3423 data points should be high enough to make it less of a concern. Additionally, because we are not using the decision tree or the k-NN sub models in the final stack model, we are also less worried about overfitting as these algorithms are improved significantly when they are trained and tested on the same data. However, there is no such thing as being too careful with your money.
+
+## Future Improvments
+
+Overall, this model is very promising for our ability to beat Vegas. To make this a more robust and less time intensive interaction, we should include the following improvements:
+
+  1. Implement K-fold cross validation to better develop model and train them properly
+  2. Implement automatic feedback and retraining as fights continue to happen
+  3. Create a Python program to:
+      + Scrape fight information
+      + Predict each fight
+      + Email each UFC fight prediction
+      + Provide occasional post-mortem reports on model performance
+  4. Create a "risk adjuster" that will only throw out predictions for fights on which it is confident beyond some value.
+  5. Adding some sort of temporal analysis that may drop older fights as newer fight data becomes available
+  6. Look into data sets with somewhat better data (there were a few columns which were improperly coded/produced NAs)
+  7. Develop some method to account for new fighters (maybe replace their stats with the median for their type [needs to be defined] and add a dummy variable?)
+  
+
+***
+# Apendix A: Inital Exploration
+***
+
+```{r include=FALSE}
+library(grid)
+library(gridExtra)
+```
+
+Before diving in to building models, we wanted to get familiar with our data and try to understand it better. We added this here to allow the main report to deal soley with the model building.
+
+## Response Variable Prevelance
+
+```{r wins, cache=TRUE}
+ggplot(xp, aes(x=Winner)) + geom_bar() + ggtitle("Who Wins More Often?")
+```
+
+Here we see that the Red fighter is often the winner. However, this is not due to some lucky or random coincidence, this is actually because the Red fighter is usually, if not always identified as the favorite. This is important to note as it may cause us to adjust thresholds down the line when working with models like ANN and Logistic Regression. Although, the discrepancy is very minor and should not have a significant impact on threshold cutoffs.
+
+## Respionse Variabel Relations
+
+### Age
+
+```{r age, cache=TRUE}
+xp %>%
+  summarise(Winner, Older = as.factor(ifelse(R_age > B_age, "Red", ifelse(R_age < B_age, "Blue", "Same")))) %>%
+ggplot(aes(x=Winner, y=Older)) + geom_jitter() + ggtitle("Does Age Really Matter?")
+```
+
+This jitter plot shows what seems to be a trend in relation to age. Essentially, the fighter who is younger looks to win more often than the fighter that is older. This finding is not too surprising and it is important to note that the Red fighter still seems to win a majority of the time (even when they are the older one), but being younger does give the blue fighter a bit of an edge.
+
+### Body Characteristics
+
+```{r body, cache=TRUE}
+height_plot <- xp %>%
+  summarise(Winner, Taller = as.factor(ifelse(R_Height_cms > B_Height_cms, "Red", ifelse(R_Height_cms < B_Height_cms, "Blue", "Same")))) %>%
+ggplot(aes(x=Winner, y=Taller)) + geom_jitter() + ggtitle("Does Height Really Matter?")
+weight_plot <- xp %>%
+  summarise(Winner, Heavier = as.factor(ifelse(R_Weight_lbs > B_Weight_lbs, "Red", ifelse(R_Weight_lbs < B_Weight_lbs, "Blue", "Same")))) %>%
+ggplot(aes(x=Winner, y=Heavier)) + geom_jitter() + ggtitle("Does Weight Really Matter?")
+grid.arrange(height_plot, weight_plot, ncol=2)
+```
+
+Here we see some body characteristics mapped against each other with some very subtle relations. Overall, the outcomes are fairly expected; the taller heavier fighter tends to win. This relation is somewhat less apparent than the relation to age, as Red still wins a large majority of the fights, even when they are at a disadvantage.
+
+### Fighter History
+
+```{r hist, cache=TRUE}
+wins_chart <- xp %>%
+  summarise(Winner, More_Wins = as.factor(ifelse(R_wins > B_wins, "Red", ifelse(R_wins < B_wins, "Blue", "Same")))) %>%
+ggplot(aes(x=Winner, y=More_Wins)) + geom_jitter() + ggtitle("Does Win History Really Matter?")
+fight_chart <- xp %>%
+  summarise(Winner, More_Fights = as.factor(ifelse(R_total_rounds_fought > B_total_rounds_fought, "Red", ifelse(R_total_rounds_fought < B_total_rounds_fought, "Blue", "Same")))) %>%
+ggplot(aes(x=Winner, y=More_Fights)) + geom_jitter() + ggtitle("Does Fight Count Really Matter?")
+grid.arrange(wins_chart, fight_chart, ncol=2)
+```
+
+Here we see a much less obvious relationship between win counts and who the winner rate will be. However, it looks like the Red fighter is often the one with more fights and more wins, which makes sense given that the "Red" designation is often given to the favorite fighter.
